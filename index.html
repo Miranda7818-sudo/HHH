@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>KRONOS — Gestión de Tiempo</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:#0d0d0d;color:#f5f5f5;font-family:'Inter',-apple-system,sans-serif;}
+::-webkit-scrollbar{width:3px;}
+::-webkit-scrollbar-thumb{background:#242424;}
+input::placeholder{color:#505050;}
+input[type=time]::-webkit-calendar-picker-indicator,
+input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.3);}
+
+/* Splash */
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes fadeOut{from{opacity:1}to{opacity:0}}
+@keyframes letterDrop{from{opacity:0;transform:translateY(-40px)}to{opacity:1;transform:translateY(0)}}
+@keyframes lineGrow{from{width:0}to{width:100%}}
+@keyframes taglineUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+.fade{animation:fadeUp 0.2s ease;}
+.splash-letter{display:inline-block;opacity:0;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef}=React;
+
+const C={
+  bg:"#0d0d0d",surface:"#141414",card:"#1a1a1a",border:"#242424",
+  borderHi:"#2e2e2e",accent:"#e8e8e8",accentDim:"#666666",
+  white:"#f5f5f5",muted:"#505050",dim:"#2a2a2a",
+};
+
+// ── Storage helpers ────────────────────────────────────────────────────────────
+function save(key,val){try{localStorage.setItem("kronos_"+key,JSON.stringify(val));}catch(e){}}
+function load(key,fallback){try{const v=localStorage.getItem("kronos_"+key);return v?JSON.parse(v):fallback;}catch(e){return fallback;}}
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+const AREAS=[
+  {id:"trabajo",label:"Trabajo"},{id:"personal",label:"Personal"},
+  {id:"salud",label:"Salud"},{id:"educacion",label:"Educación"},
+  {id:"finanzas",label:"Finanzas"},{id:"hogar",label:"Hogar"},{id:"social",label:"Social"},
+];
+const QUADS=[
+  {id:0,label:"Urgente · Importante",short:"UI"},
+  {id:1,label:"Importante · No urgente",short:"IU"},
+  {id:2,label:"Urgente · No importante",short:"UN"},
+  {id:3,label:"No urgente · No importante",short:"NN"},
+];
+const ENERGY_BLOCKS=[
+  {hour:6,level:3},{hour:7,level:5},{hour:8,level:8},{hour:9,level:9},
+  {hour:10,level:9},{hour:11,level:8},{hour:12,level:6},{hour:13,level:4},
+  {hour:14,level:3},{hour:15,level:5},{hour:16,level:6},{hour:17,level:7},
+  {hour:18,level:6},{hour:19,level:4},{hour:20,level:3},{hour:21,level:2},
+];
+const AMBIENT=["Océano","Lluvia","Chimenea","Bosque","Cafetería","Silencio"];
+
+const DEFAULT_TASKS=[
+  {id:1,text:"Revisar propuesta del cliente",energy:"alta",quad:0,done:false,category:"trabajo",time:"09:00"},
+  {id:2,text:"Planificar sprint semanal",energy:"alta",quad:1,done:false,category:"trabajo",time:"10:30"},
+  {id:3,text:"Leer 30 minutos",energy:"baja",quad:1,done:false,category:"personal",time:"20:00"},
+];
+const DEFAULT_HABITS=[
+  {id:1,name:"Meditación",streak:0,done:false,time:"07:00"},
+  {id:2,name:"Ejercicio",streak:0,done:false,time:"07:30"},
+  {id:3,name:"Lectura",streak:0,done:false,time:"20:00"},
+];
+const DEFAULT_GOALS=[
+  {id:1,title:"Mi primer objetivo",current:0,target:10,unit:"pasos",deadline:"",actions:[]},
+];
+const DEFAULT_BLOCKS=[
+  {id:1,task:"Trabajo profundo",start:"09:00",end:"11:00"},
+  {id:2,task:"Pausa · Almuerzo",start:"13:00",end:"14:00"},
+];
+
+function toMin(t){const[h,m]=t.split(":").map(Number);return h*60+m;}
+function fmt(s){return`${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;}
+const sb={fontFamily:"inherit",cursor:"pointer",transition:"all 0.15s"};
+
+// ── UI primitives ──────────────────────────────────────────────────────────────
+function Lbl({children,style}){return <div style={{fontSize:10,letterSpacing:"0.12em",textTransform:"uppercase",color:C.muted,fontWeight:500,...style}}>{children}</div>;}
+function Card({children,style}){return <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:4,padding:20,...style}}>{children}</div>;}
+function Inp({value,onChange,onKeyDown,placeholder,type="text",min,max,style}){
+  return <input type={type} value={value} onChange={onChange} onKeyDown={onKeyDown} placeholder={placeholder} min={min} max={max}
+    style={{width:"100%",background:C.surface,border:`1px solid ${C.border}`,borderRadius:3,padding:"9px 12px",color:C.white,fontSize:13,outline:"none",fontFamily:"inherit",colorScheme:"dark",...style}}/>;
+}
+function Chk({done}){
+  return <div style={{width:16,height:16,borderRadius:2,flexShrink:0,background:done?C.accentDim:"transparent",border:`1px solid ${done?C.accentDim:C.border}`,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    {done&&<div style={{width:6,height:6,background:"#0d0d0d",borderRadius:1}}/>}
+  </div>;
+}
+function Badge({cat}){
+  const a=AREAS.find(x=>x.id===cat)||{label:cat};
+  return <span style={{fontSize:9,padding:"2px 7px",borderRadius:3,background:C.dim,color:C.muted,letterSpacing:"0.06em",textTransform:"uppercase",whiteSpace:"nowrap"}}>{a.label}</span>;
+}
+function DelBtn({onClick}){
+  return <button onClick={e=>{e.stopPropagation();onClick();}} style={{...sb,background:"none",border:"none",color:C.muted,fontSize:16,lineHeight:1,padding:"0 4px",flexShrink:0}}>×</button>;
+}
+function PBtn({label,onClick,disabled,style}){
+  return <button onClick={onClick} disabled={disabled} style={{...sb,background:disabled?C.dim:C.white,color:disabled?C.muted:"#0d0d0d",border:"none",borderRadius:3,padding:"9px 20px",fontSize:12,fontWeight:500,letterSpacing:"0.05em",opacity:disabled?0.5:1,...style}}>{label}</button>;
+}
+function GBtn({label,onClick,style}){
+  return <button onClick={onClick} style={{...sb,background:"transparent",color:C.muted,border:`1px solid ${C.border}`,borderRadius:3,padding:"9px 20px",fontSize:12,fontWeight:500,letterSpacing:"0.05em",...style}}>{label}</button>;
+}
+
+// ── Splash Screen ──────────────────────────────────────────────────────────────
+function SplashScreen({onDone}){
+  const letters="KRONOS".split("");
+  const [phase,setPhase]=useState(0); // 0=letters, 1=line, 2=tagline, 3=fadeout
+
+  useEffect(()=>{
+    const t1=setTimeout(()=>setPhase(1),1200);
+    const t2=setTimeout(()=>setPhase(2),1800);
+    const t3=setTimeout(()=>setPhase(3),3000);
+    const t4=setTimeout(()=>onDone(),3600);
+    return()=>{clearTimeout(t1);clearTimeout(t2);clearTimeout(t3);clearTimeout(t4);};
+  },[]);
+
+  return(
+    <div style={{
+      position:"fixed",inset:0,background:C.bg,zIndex:9999,
+      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      animation:phase===3?"fadeOut 0.6s ease forwards":"none",
+    }}>
+      <style>{`
+        @keyframes fadeOut{from{opacity:1}to{opacity:0;pointer-events:none}}
+        @keyframes letterDrop{from{opacity:0;transform:translateY(-30px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes lineGrow{from{width:0;opacity:0}to{width:80px;opacity:1}}
+        @keyframes tagUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+      `}</style>
+
+      {/* Letters */}
+      <div style={{display:"flex",gap:6,marginBottom:20}}>
+        {letters.map((l,i)=>(
+          <span key={i} style={{
+            fontSize:56,fontWeight:600,letterSpacing:"-1px",color:C.white,
+            animation:`letterDrop 0.4s ease ${i*0.08}s both`,
+            fontFamily:"'Inter',sans-serif",
+          }}>{l}</span>
+        ))}
+      </div>
+
+      {/* Line */}
+      <div style={{
+        height:1,background:C.accentDim,marginBottom:16,
+        animation:phase>=1?"lineGrow 0.5s ease both":"none",
+        width:phase>=1?80:0,
+      }}/>
+
+      {/* Tagline */}
+      {phase>=2&&(
+        <div style={{
+          fontSize:11,color:C.muted,letterSpacing:"0.2em",textTransform:"uppercase",
+          animation:"tagUp 0.4s ease both",
+        }}>
+          Gestión de tiempo
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Auth Screen ────────────────────────────────────────────────────────────────
+function AuthScreen({onLogin}){
+  const [mode,setMode]=useState("login"); // login | register
+  const [form,setForm]=useState({name:"",email:"",password:""});
+  const [error,setError]=useState("");
+
+  const handleSubmit=()=>{
+    setError("");
+    if(!form.email.trim()||!form.password.trim()){setError("Completa todos los campos.");return;}
+    if(form.password.length<4){setError("La contraseña debe tener al menos 4 caracteres.");return;}
+
+    const users=load("users",{});
+
+    if(mode==="register"){
+      if(!form.name.trim()){setError("Escribe tu nombre.");return;}
+      if(users[form.email]){setError("Este correo ya está registrado.");return;}
+      users[form.email]={name:form.name,password:form.password};
+      save("users",users);
+      save("session",{email:form.email,name:form.name});
+      onLogin({email:form.email,name:form.name});
+    }else{
+      const user=users[form.email];
+      if(!user||user.password!==form.password){setError("Correo o contraseña incorrectos.");return;}
+      save("session",{email:form.email,name:user.name});
+      onLogin({email:form.email,name:user.name});
+    }
+  };
+
+  return(
+    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+      <div style={{width:"100%",maxWidth:360}}>
+        {/* Logo */}
+        <div style={{textAlign:"center",marginBottom:40}}>
+          <div style={{fontSize:28,fontWeight:600,letterSpacing:"0.1em",marginBottom:6}}>KRONOS</div>
+          <Lbl>Gestión de tiempo</Lbl>
+        </div>
+
+        <Card>
+          {/* Tabs */}
+          <div style={{display:"flex",gap:0,marginBottom:24,borderBottom:`1px solid ${C.border}`}}>
+            {["login","register"].map(m=>(
+              <button key={m} onClick={()=>{setMode(m);setError("");setForm({name:"",email:"",password:""});}} style={{...sb,flex:1,background:"none",border:"none",padding:"10px 0",fontSize:12,color:mode===m?C.white:C.muted,fontWeight:mode===m?500:400,borderBottom:mode===m?`1px solid ${C.white}`:"1px solid transparent",marginBottom:-1,letterSpacing:"0.04em"}}>
+                {m==="login"?"Iniciar sesión":"Registrarse"}
+              </button>
+            ))}
+          </div>
+
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {mode==="register"&&(
+              <div>
+                <Lbl style={{marginBottom:6}}>Nombre</Lbl>
+                <Inp value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Tu nombre"/>
+              </div>
+            )}
+            <div>
+              <Lbl style={{marginBottom:6}}>Correo electrónico</Lbl>
+              <Inp value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))} placeholder="correo@ejemplo.com" type="email"/>
+            </div>
+            <div>
+              <Lbl style={{marginBottom:6}}>Contraseña</Lbl>
+              <Inp value={form.password} onChange={e=>setForm(f=>({...f,password:e.target.value}))} placeholder="••••••••" type="password"
+                onKeyDown={e=>e.key==="Enter"&&handleSubmit()}/>
+            </div>
+
+            {error&&<div style={{fontSize:12,color:"#7c4a4a",padding:"8px 12px",background:"#7c4a4a22",borderRadius:3,border:"1px solid #7c4a4a44"}}>{error}</div>}
+
+            <PBtn label={mode==="login"?"Entrar →":"Crear cuenta →"} onClick={handleSubmit} style={{width:"100%",marginTop:4}}/>
+          </div>
+        </Card>
+
+        <div style={{textAlign:"center",marginTop:20,fontSize:11,color:C.muted}}>
+          Tus datos se guardan localmente en este dispositivo
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── AI components ──────────────────────────────────────────────────────────────
+function AIAnalysis({tasks}){
+  const [result,setResult]=useState("");const[loading,setLoading]=useState(false);
+  const run=async()=>{
+    setLoading(true);setResult("");
+    const done=tasks.filter(t=>t.done).length,pend=tasks.filter(t=>!t.done).length,
+      high=tasks.filter(t=>t.energy==="alta"&&!t.done).length,hour=new Date().getHours();
+    try{
+      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
+          messages:[{role:"user",content:`Eres consultor de productividad ejecutiva. Análisis conciso (4-5 oraciones) con recomendaciones. Sin emojis. Solo texto plano.\nHora: ${hour}:00 · Completadas: ${done} · Pendientes: ${pend} · Alta energía sin completar: ${high}`}]})});
+      const data=await res.json();
+      setResult(data.content?.map(c=>c.text||"").join("")||"Sin respuesta.");
+    }catch{setResult("No se pudo conectar.");}
+    setLoading(false);
+  };
+  return(
+    <Card style={{marginBottom:16}}>
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:result||loading?16:0}}>
+        <div><Lbl style={{marginBottom:6}}>Análisis IA</Lbl><div style={{fontSize:13}}>Diagnóstico de productividad</div></div>
+        <GBtn label={loading?"Procesando...":"Ejecutar análisis"} onClick={run}/>
+      </div>
+      {(result||loading)&&<><div style={{height:1,background:C.border,margin:"16px 0"}}/><div style={{color:loading?C.muted:C.accent,fontSize:13,lineHeight:1.8,fontStyle:loading?"italic":"normal"}}>{loading?"Analizando...":result}</div></>}
+    </Card>
+  );
+}
+
+function TaskInput({onAdd}){
+  const [input,setInput]=useState("");const[area,setArea]=useState("trabajo");const[quad,setQuad]=useState(0);const[loading,setLoading]=useState(false);const[open,setOpen]=useState(false);
+  const submit=async()=>{
+    if(!input.trim())return;setLoading(true);
+    try{
+      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
+          messages:[{role:"user",content:`Extrae: texto limpio, energía (alta/media/baja), hora HH:MM. SOLO JSON sin markdown: {"text":"...","energy":"...","time":"HH:MM"}\nTarea: "${input}"`}]})});
+      const data=await res.json();
+      const raw=data.content?.map(c=>c.text||"").join("").replace(/```json|```/g,"").trim();
+      onAdd({...JSON.parse(raw),category:area,quad,done:false,id:Date.now()});
+    }catch{onAdd({text:input,energy:"media",category:area,time:"09:00",quad,done:false,id:Date.now()});}
+    setInput("");setOpen(false);setLoading(false);
+  };
+  return(
+    <div style={{marginBottom:20}}>
+      <div style={{display:"flex",gap:8,marginBottom:open?8:0}}>
+        <input value={input} onChange={e=>{setInput(e.target.value);if(e.target.value)setOpen(true);}} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Describir tarea en lenguaje natural..."
+          style={{flex:1,background:C.surface,border:`1px solid ${C.border}`,borderRadius:3,padding:"9px 12px",color:C.white,fontSize:13,outline:"none",fontFamily:"inherit"}}/>
+        <PBtn label={loading?"...":"Agregar"} onClick={submit} disabled={loading||!input.trim()}/>
+      </div>
+      {open&&(
+        <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:4,padding:16,display:"flex",flexDirection:"column",gap:14}}>
+          <div><Lbl style={{marginBottom:8}}>Área</Lbl><div style={{display:"flex",flexWrap:"wrap",gap:6}}>{AREAS.map(a=>(<button key={a.id} onClick={()=>setArea(a.id)} style={{...sb,background:area===a.id?C.white:"transparent",color:area===a.id?"#0d0d0d":C.muted,border:`1px solid ${area===a.id?C.white:C.border}`,borderRadius:3,padding:"5px 12px",fontSize:11}}>{a.label}</button>))}</div></div>
+          <div><Lbl style={{marginBottom:8}}>Cuadrante Eisenhower</Lbl><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>{QUADS.map(q=>(<button key={q.id} onClick={()=>setQuad(q.id)} style={{...sb,background:quad===q.id?C.white:"transparent",color:quad===q.id?"#0d0d0d":C.muted,border:`1px solid ${quad===q.id?C.white:C.border}`,borderRadius:3,padding:"8px 10px",fontSize:11,textAlign:"left",lineHeight:1.4}}>{q.label}</button>))}</div></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GoalCard({goal,onUpdate,onDelete,onUpdateActions}){
+  const [editingProgress,setEditingProgress]=useState(false);
+  const [val,setVal]=useState(String(goal.current));
+  const [showActions,setShowActions]=useState(false);
+  const [newAction,setNewAction]=useState("");
+  const actions=goal.actions||[];
+  const pct=Math.min(100,Math.round((goal.current/goal.target)*100));
+  const raw=goal.deadline?new Date(goal.deadline):null;
+  const days=raw&&!isNaN(raw)?Math.ceil((raw-new Date())/86400000):null;
+  const doneActions=actions.filter(a=>a.done).length;
+  const save=()=>{const n=parseFloat(val);if(!isNaN(n))onUpdate(goal.id,Math.min(n,goal.target));setEditingProgress(false);};
+  const toggleAction=id=>{onUpdateActions(goal.id,actions.map(a=>a.id===id?{...a,done:!a.done}:a));};
+  const addAction=()=>{if(!newAction.trim())return;onUpdateActions(goal.id,[...actions,{id:Date.now(),text:newAction.trim(),done:false}]);setNewAction("");};
+  const deleteAction=id=>{onUpdateActions(goal.id,actions.filter(a=>a.id!==id));};
+  return(
+    <Card style={{marginBottom:8}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
+        <div style={{flex:1,paddingRight:16}}><div style={{fontSize:14,marginBottom:4}}>{goal.title}</div><Lbl>{days===null?"Sin fecha":days>0?`${days} días restantes`:days===0?"Vence hoy":"Plazo vencido"}</Lbl></div>
+        <div style={{textAlign:"right",display:"flex",alignItems:"flex-start",gap:12}}>
+          <div><div style={{fontSize:22,fontWeight:200}}>{pct}%</div><div style={{fontSize:10,color:C.muted,marginTop:2}}>{goal.current} / {goal.target} {goal.unit}</div></div>
+          <DelBtn onClick={()=>onDelete(goal.id)}/>
+        </div>
+      </div>
+      <div style={{height:2,background:C.dim,borderRadius:1,marginBottom:14}}>
+        <div style={{width:`${pct}%`,height:"100%",background:pct>=100?C.white:C.accentDim,borderRadius:1,transition:"width 0.3s"}}/>
+      </div>
+      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:showActions?16:0}}>
+        {editingProgress?(
+          <div style={{display:"flex",gap:8,alignItems:"flex-end",flex:1}}>
+            <div style={{flex:1}}><Lbl style={{marginBottom:5}}>Actualizar ({goal.unit})</Lbl><Inp value={val} type="number" min="0" max={String(goal.target)} onChange={e=>setVal(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")save();if(e.key==="Escape")setEditingProgress(false);}}/></div>
+            <PBtn label="Guardar" onClick={save}/><GBtn label="✕" onClick={()=>setEditingProgress(false)}/>
+          </div>
+        ):(
+          <>
+            <button onClick={()=>setEditingProgress(true)} style={{...sb,background:"none",border:`1px solid ${C.border}`,borderRadius:3,padding:"6px 14px",color:C.muted,fontSize:11}}>Actualizar progreso</button>
+            <button onClick={()=>setShowActions(v=>!v)} style={{...sb,background:showActions?C.dim:"none",border:`1px solid ${showActions?C.borderHi:C.border}`,borderRadius:3,padding:"6px 14px",color:showActions?C.white:C.muted,fontSize:11,display:"flex",alignItems:"center",gap:6}}>
+              Acciones {actions.length>0&&<span style={{background:C.accentDim,color:"#0d0d0d",borderRadius:10,padding:"1px 6px",fontSize:9,fontWeight:600}}>{doneActions}/{actions.length}</span>}
+            </button>
+          </>
+        )}
+      </div>
+      {showActions&&(
+        <div style={{background:C.surface,borderRadius:4,padding:14,border:`1px solid ${C.border}`}}>
+          <Lbl style={{marginBottom:12}}>Acciones</Lbl>
+          {actions.length===0&&<div style={{color:C.muted,fontSize:12,textAlign:"center",padding:"8px 0",marginBottom:8}}>Sin acciones. Agrega los pasos necesarios.</div>}
+          {actions.map((action,i)=>(
+            <div key={action.id}>{i>0&&<div style={{height:1,background:C.border,margin:"2px 0"}}/>}
+              <div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0"}}>
+                <div onClick={()=>toggleAction(action.id)} style={{cursor:"pointer"}}><Chk done={action.done}/></div>
+                <div style={{flex:1,fontSize:12,textDecoration:action.done?"line-through":"none",opacity:action.done?0.45:1}}>{action.text}</div>
+                <DelBtn onClick={()=>deleteAction(action.id)}/>
+              </div>
+            </div>
+          ))}
+          <div style={{display:"flex",gap:8,marginTop:10}}>
+            <input value={newAction} onChange={e=>setNewAction(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addAction()} placeholder="Nueva acción..."
+              style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:3,padding:"8px 12px",color:C.white,fontSize:12,outline:"none",fontFamily:"inherit"}}/>
+            <button onClick={addAction} disabled={!newAction.trim()} style={{...sb,background:newAction.trim()?C.white:C.dim,color:newAction.trim()?"#0d0d0d":C.muted,border:"none",borderRadius:3,padding:"8px 14px",fontSize:12,opacity:newAction.trim()?1:0.4}}>+</button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function AddGoalForm({onSave,onCancel}){
+  const [g,setG]=useState({title:"",current:"0",target:"",unit:"",deadline:""});
+  const [actions,setActions]=useState([]);const[newAction,setNewAction]=useState("");
+  const valid=g.title.trim()&&g.target&&parseFloat(g.target)>0;
+  const pct=g.target?Math.min(100,Math.round(((parseFloat(g.current)||0)/Math.max(1,parseFloat(g.target)))*100)):0;
+  const addAction=()=>{if(!newAction.trim())return;setActions(as=>[...as,{id:Date.now(),text:newAction.trim(),done:false}]);setNewAction("");};
+  return(
+    <Card style={{marginBottom:20,border:`1px solid ${C.borderHi}`}}>
+      <Lbl style={{marginBottom:14}}>Nuevo objetivo</Lbl>
+      <Inp value={g.title} onChange={e=>setG(x=>({...x,title:e.target.value}))} placeholder="Título del objetivo" style={{marginBottom:10}}/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
+        <div><Lbl style={{marginBottom:5}}>Progreso actual</Lbl><Inp type="number" value={g.current} min="0" onChange={e=>setG(x=>({...x,current:e.target.value}))} placeholder="0"/></div>
+        <div><Lbl style={{marginBottom:5}}>Meta total</Lbl><Inp type="number" value={g.target} min="1" onChange={e=>setG(x=>({...x,target:e.target.value}))} placeholder="100"/></div>
+        <div><Lbl style={{marginBottom:5}}>Unidad</Lbl><Inp value={g.unit} onChange={e=>setG(x=>({...x,unit:e.target.value}))} placeholder="km, págs…"/></div>
+      </div>
+      <div style={{marginBottom:14}}><Lbl style={{marginBottom:5}}>Fecha límite (opcional)</Lbl><Inp type="date" value={g.deadline} onChange={e=>setG(x=>({...x,deadline:e.target.value}))}/></div>
+      <div style={{marginBottom:16}}>
+        <Lbl style={{marginBottom:10}}>Acciones (opcional)</Lbl>
+        <div style={{background:C.surface,borderRadius:4,padding:12,border:`1px solid ${C.border}`}}>
+          {actions.map((a,i)=>(<div key={a.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:i<actions.length-1?`1px solid ${C.border}`:"none"}}><div style={{width:6,height:6,borderRadius:3,background:C.accentDim,flexShrink:0}}/><span style={{flex:1,fontSize:12}}>{a.text}</span><DelBtn onClick={()=>setActions(as=>as.filter(x=>x.id!==a.id))}/></div>))}
+          <div style={{display:"flex",gap:8,marginTop:actions.length>0?8:0}}>
+            <input value={newAction} onChange={e=>setNewAction(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addAction()} placeholder="Escribe y presiona Enter..."
+              style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:3,padding:"8px 12px",color:C.white,fontSize:12,outline:"none",fontFamily:"inherit"}}/>
+            <button onClick={addAction} disabled={!newAction.trim()} style={{...sb,background:newAction.trim()?C.white:C.dim,color:newAction.trim()?"#0d0d0d":C.muted,border:"none",borderRadius:3,padding:"8px 14px",fontSize:12,opacity:newAction.trim()?1:0.4}}>+</button>
+          </div>
+        </div>
+      </div>
+      {g.title&&g.target&&(<div style={{background:C.surface,borderRadius:3,padding:"10px 14px",marginBottom:16}}><div style={{fontSize:11,color:C.muted,marginBottom:6}}>Vista previa</div><div style={{fontSize:13,marginBottom:8}}>{g.title}</div><div style={{height:2,background:C.dim,borderRadius:1,marginBottom:4}}><div style={{width:`${pct}%`,height:"100%",background:C.accentDim,borderRadius:1}}/></div><div style={{fontSize:10,color:C.muted}}>{g.current||0} / {g.target} {g.unit||"unidades"} · {pct}%</div></div>)}
+      <div style={{display:"flex",gap:8}}><PBtn label="Crear objetivo" onClick={()=>valid&&onSave({...g,actions})} disabled={!valid}/><GBtn label="Cancelar" onClick={onCancel}/></div>
+    </Card>
+  );
+}
+
+// ── Main App ───────────────────────────────────────────────────────────────────
+function Kronos({user,onLogout}){
+  const uid=user.email.replace(/[^a-z0-9]/gi,"_");
+
+  const [tab,setTab]=useState("hoy");
+  const [tasks,setTasksRaw]=useState(()=>load("tasks_"+uid,DEFAULT_TASKS));
+  const [habits,setHabitsRaw]=useState(()=>load("habits_"+uid,DEFAULT_HABITS));
+  const [goals,setGoalsRaw]=useState(()=>load("goals_"+uid,DEFAULT_GOALS));
+  const [blocks,setBlocksRaw]=useState(()=>load("blocks_"+uid,DEFAULT_BLOCKS));
+  const [focusTime,setFocusTime]=useState(25*60);
+  const [focusRun,setFocusRun]=useState(false);
+  const [sound,setSound]=useState(null);
+  const [now,setNow]=useState(new Date());
+  const [breakAlert,setBreakAlert]=useState(false);
+  const [showAddHabit,setShowAddHabit]=useState(false);
+  const [newHabit,setNewHabit]=useState({name:"",time:""});
+  const [showAddBlock,setShowAddBlock]=useState(false);
+  const [newBlock,setNewBlock]=useState({task:"",start:"09:00",end:"10:00"});
+  const [showAddGoal,setShowAddGoal]=useState(false);
+  const [filterArea,setFilterArea]=useState("todas");
+  const timerRef=useRef(null);
+
+  // Auto-save on every change
+  const setTasks=v=>{const next=typeof v==="function"?v(tasks):v;setTasksRaw(next);save("tasks_"+uid,next);};
+  const setHabits=v=>{const next=typeof v==="function"?v(habits):v;setHabitsRaw(next);save("habits_"+uid,next);};
+  const setGoals=v=>{const next=typeof v==="function"?v(goals):v;setGoalsRaw(next);save("goals_"+uid,next);};
+  const setBlocks=v=>{const next=typeof v==="function"?v(blocks):v;setBlocksRaw(next);save("blocks_"+uid,next);};
+
+  useEffect(()=>{const t=setInterval(()=>setNow(new Date()),1000);return()=>clearInterval(t);},[]);
+  useEffect(()=>{
+    if(focusRun&&focusTime>0){timerRef.current=setInterval(()=>setFocusTime(t=>t-1),1000);}
+    else{clearInterval(timerRef.current);if(focusTime===0)setBreakAlert(true);}
+    return()=>clearInterval(timerRef.current);
+  },[focusRun,focusTime]);
+
+  const toggleTask=id=>setTasks(ts=>ts.map(t=>t.id===id?{...t,done:!t.done}:t));
+  const deleteTask=id=>setTasks(ts=>ts.filter(t=>t.id!==id));
+  const toggleHabit=id=>setHabits(hs=>hs.map(h=>h.id===id?{...h,done:!h.done}:h));
+  const deleteHabit=id=>setHabits(hs=>hs.filter(h=>h.id!==id));
+  const addHabit=()=>{if(!newHabit.name.trim())return;setHabits(hs=>[...hs,{id:Date.now(),name:newHabit.name,streak:0,done:false,time:newHabit.time||"Todo el día"}]);setNewHabit({name:"",time:""});setShowAddHabit(false);};
+  const addBlock=()=>{if(!newBlock.task.trim()||toMin(newBlock.end)<=toMin(newBlock.start))return;setBlocks(bs=>[...bs,{id:Date.now(),...newBlock}]);setNewBlock({task:"",start:"09:00",end:"10:00"});setShowAddBlock(false);};
+  const deleteBlock=id=>setBlocks(bs=>bs.filter(b=>b.id!==id));
+  const saveGoal=g=>{const t=parseFloat(g.target),c=parseFloat(g.current)||0;setGoals(gs=>[...gs,{id:Date.now(),title:g.title,current:Math.min(c,t),target:t,unit:g.unit||"unidades",deadline:g.deadline||"",actions:g.actions||[]}]);setShowAddGoal(false);};
+  const updateGoal=(id,v)=>setGoals(gs=>gs.map(g=>g.id===id?{...g,current:v}:g));
+  const updateGoalActions=(id,actions)=>setGoals(gs=>gs.map(g=>g.id===id?{...g,actions}:g));
+  const deleteGoal=id=>setGoals(gs=>gs.filter(g=>g.id!==id));
+
+  const hr=now.getHours();
+  const energyNow=ENERGY_BLOCKS.find(b=>b.hour===hr)||ENERGY_BLOCKS[3];
+  const doneT=tasks.filter(t=>t.done).length;
+  const doneH=habits.filter(h=>h.done).length;
+  const filtered=filterArea==="todas"?tasks:tasks.filter(t=>t.category===filterArea);
+
+  const TABS=[
+    {id:"hoy",label:"Resumen"},{id:"tareas",label:"Tareas"},{id:"habitos",label:"Hábitos"},
+    {id:"metas",label:"Objetivos"},{id:"bloques",label:"Agenda"},{id:"enfoque",label:"Enfoque"},{id:"analisis",label:"Análisis"},
+  ];
+
+  return(
+    <div style={{minHeight:"100vh",background:C.bg,color:C.white}}>
+      {breakAlert&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:4,padding:48,maxWidth:360,textAlign:"center"}}>
+            <Lbl style={{marginBottom:16}}>Sesión completada</Lbl>
+            <div style={{fontSize:20,fontWeight:300,marginBottom:12}}>Pausa obligatoria</div>
+            <div style={{color:C.muted,fontSize:13,lineHeight:1.7,marginBottom:32}}>Ha concluido la sesión. Se recomienda descansar 5 minutos.</div>
+            <PBtn label="Confirmar descanso" onClick={()=>{setBreakAlert(false);setFocusTime(25*60);setFocusRun(false);}}/>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <div style={{background:C.bg,borderBottom:`1px solid ${C.border}`,position:"sticky",top:0,zIndex:100}}>
+        <div style={{maxWidth:800,margin:"0 auto",padding:"0 24px"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"16px 0 12px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:16}}>
+              <span style={{fontSize:13,fontWeight:600,letterSpacing:"0.1em"}}>KRONOS</span>
+              <div style={{width:1,height:14,background:C.border}}/>
+              <span style={{fontSize:11,color:C.muted}}>Gestión de tiempo</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:16}}>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:13,fontWeight:500}}>{now.toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"})}</div>
+                <div style={{fontSize:10,color:C.muted,marginTop:1}}>{now.toLocaleDateString("es-ES",{weekday:"short",day:"numeric",month:"short"})}</div>
+              </div>
+              <div style={{width:1,height:24,background:C.border}}/>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:11,color:C.muted}}>{user.name}</div>
+                <button onClick={onLogout} style={{...sb,background:"none",border:"none",color:C.muted,fontSize:10,padding:0,textDecoration:"underline"}}>Cerrar sesión</button>
+              </div>
+            </div>
+          </div>
+          <div style={{display:"flex",overflowX:"auto"}}>
+            {TABS.map(t=>(<button key={t.id} onClick={()=>setTab(t.id)} style={{...sb,background:"none",border:"none",padding:"8px 14px",fontSize:11,color:tab===t.id?C.white:C.muted,fontWeight:tab===t.id?500:400,borderBottom:tab===t.id?`1px solid ${C.white}`:"1px solid transparent",marginBottom:-1,whiteSpace:"nowrap",letterSpacing:"0.04em"}}>{t.label}</button>))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{maxWidth:800,margin:"0 auto",padding:"32px 24px"}}>
+
+        {/* RESUMEN */}
+        {tab==="hoy"&&(
+          <div className="fade">
+            <div style={{marginBottom:20}}><div style={{fontSize:16,fontWeight:300,marginBottom:2}}>Hola, {user.name} 👋</div><Lbl>Aquí está tu resumen de hoy</Lbl></div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:1,background:C.border,border:`1px solid ${C.border}`,borderRadius:4,overflow:"hidden",marginBottom:20}}>
+              {[{l:"Tareas",v:`${doneT}/${tasks.length}`},{l:"Hábitos",v:`${doneH}/${habits.length}`},{l:"Enfoque",v:"0h 0m"},{l:"Energía",v:`${energyNow.level}/10`}].map((k,i)=>(<div key={i} style={{background:C.card,padding:"16px 14px"}}><Lbl style={{marginBottom:8}}>{k.l}</Lbl><div style={{fontSize:20,fontWeight:300}}>{k.v}</div></div>))}
+            </div>
+            <Card style={{marginBottom:16}}>
+              <Lbl style={{marginBottom:14}}>Curva de energía</Lbl>
+              <div style={{display:"flex",alignItems:"flex-end",gap:3,height:56}}>
+                {ENERGY_BLOCKS.map((b,i)=>(<div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}><div style={{width:"100%",height:`${(b.level/10)*48}px`,background:b.hour===hr?C.white:C.dim,borderRadius:1}}/>{b.hour%4===0&&<div style={{fontSize:8,color:C.muted}}>{b.hour}</div>}</div>))}
+              </div>
+            </Card>
+            <Card style={{marginBottom:16}}>
+              <Lbl style={{marginBottom:14}}>Pendientes prioritarios</Lbl>
+              {tasks.filter(t=>!t.done).slice(0,4).map((task,i)=>(<div key={task.id}>{i>0&&<div style={{height:1,background:C.border}}/>}<div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 0"}}><div onClick={()=>toggleTask(task.id)} style={{display:"flex",alignItems:"center",gap:12,flex:1,cursor:"pointer"}}><Chk done={task.done}/><div style={{flex:1}}><div style={{fontSize:13}}>{task.text}</div><div style={{fontSize:10,color:C.muted,marginTop:2}}>{task.time}</div></div></div><Badge cat={task.category}/></div></div>))}
+              {tasks.filter(t=>!t.done).length===0&&<div style={{color:C.muted,fontSize:13,textAlign:"center",padding:"16px 0"}}>¡Todo al día! Sin pendientes.</div>}
+            </Card>
+            <Card><div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><div><Lbl style={{marginBottom:6}}>Cierre de jornada</Lbl><div style={{fontSize:13,color:C.muted}}>Reflexión y planificación del día siguiente</div></div><GBtn label="Iniciar" onClick={()=>{}}/></div></Card>
+          </div>
+        )}
+
+        {/* TAREAS */}
+        {tab==="tareas"&&(
+          <div className="fade">
+            <TaskInput onAdd={task=>setTasks(ts=>[...ts,task])}/>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:20}}>
+              {[{id:"todas",label:"Todas"},...AREAS].map(a=>(<button key={a.id} onClick={()=>setFilterArea(a.id)} style={{...sb,background:filterArea===a.id?C.white:"transparent",color:filterArea===a.id?"#0d0d0d":C.muted,border:`1px solid ${filterArea===a.id?C.white:C.border}`,borderRadius:3,padding:"5px 12px",fontSize:11}}>{a.label}</button>))}
+            </div>
+            <div style={{marginBottom:20}}>
+              <Lbl style={{marginBottom:12}}>Matriz de Eisenhower</Lbl>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:1,background:C.border,border:`1px solid ${C.border}`,borderRadius:4,overflow:"hidden"}}>
+                {QUADS.map(q=>(<div key={q.id} style={{background:C.card,padding:16,minHeight:100}}><Lbl style={{marginBottom:12}}>{q.label}</Lbl>{filtered.filter(t=>t.quad===q.id).map(task=>(<div key={task.id} style={{display:"flex",gap:8,marginBottom:8,opacity:task.done?0.3:1,alignItems:"flex-start"}}><div onClick={()=>toggleTask(task.id)} style={{display:"flex",gap:8,flex:1,cursor:"pointer"}}><Chk done={task.done}/><div style={{fontSize:12,textDecoration:task.done?"line-through":"none",lineHeight:1.5}}>{task.text}</div></div><DelBtn onClick={()=>deleteTask(task.id)}/></div>))}</div>))}
+              </div>
+            </div>
+            <Card>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:14}}><Lbl>Todas las tareas</Lbl><Lbl>{filtered.length} tareas</Lbl></div>
+              {filtered.map((task,i)=>(<div key={task.id}>{i>0&&<div style={{height:1,background:C.border}}/>}<div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 0",opacity:task.done?0.4:1}}><div onClick={()=>toggleTask(task.id)} style={{display:"flex",alignItems:"center",gap:12,flex:1,cursor:"pointer"}}><Chk done={task.done}/><div style={{flex:1}}><div style={{fontSize:13,textDecoration:task.done?"line-through":"none"}}>{task.text}</div><div style={{fontSize:10,color:C.muted,marginTop:2}}>{task.time} · {QUADS.find(q=>q.id===task.quad)?.short}</div></div></div><Badge cat={task.category}/><Lbl>{task.energy}</Lbl><DelBtn onClick={()=>deleteTask(task.id)}/></div></div>))}
+              {filtered.length===0&&<div style={{color:C.muted,fontSize:13,textAlign:"center",padding:"20px 0"}}>No hay tareas en esta área.</div>}
+            </Card>
+          </div>
+        )}
+
+        {/* HÁBITOS */}
+        {tab==="habitos"&&(
+          <div className="fade">
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:20}}><div style={{fontSize:13,fontWeight:500}}>Hábitos diarios</div><Lbl>{doneH} de {habits.length} completados</Lbl></div>
+            <Card style={{marginBottom:16}}>
+              {habits.map((h,i)=>(<div key={h.id}>{i>0&&<div style={{height:1,background:C.border}}/>}<div style={{display:"flex",alignItems:"center",gap:14,padding:"14px 0"}}><div onClick={()=>toggleHabit(h.id)} style={{display:"flex",alignItems:"center",gap:14,flex:1,cursor:"pointer"}}><div style={{width:18,height:18,borderRadius:9,flexShrink:0,background:h.done?C.white:"transparent",border:`1px solid ${h.done?C.white:C.border}`,display:"flex",alignItems:"center",justifyContent:"center"}}>{h.done&&<div style={{width:7,height:7,background:"#0d0d0d",borderRadius:4}}/>}</div><div style={{opacity:h.done?0.45:1}}><div style={{fontSize:13}}>{h.name}</div><div style={{fontSize:10,color:C.muted,marginTop:2}}>{h.time}</div></div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:13,color:C.muted}}>{h.streak}</div><div style={{fontSize:9,color:C.muted,textTransform:"uppercase"}}>días</div></div><DelBtn onClick={()=>deleteHabit(h.id)}/></div></div>))}
+            </Card>
+            <Card style={{marginBottom:16}}>
+              <Lbl style={{marginBottom:14}}>Historial semanal</Lbl>
+              <div style={{display:"flex",gap:6}}>
+                {["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"].map((d,i)=>(<div key={d} style={{flex:1,textAlign:"center"}}><div style={{fontSize:9,color:C.muted,marginBottom:8,textTransform:"uppercase",letterSpacing:"0.06em"}}>{d}</div><div style={{height:24,borderRadius:2,background:i<5?C.accentDim:C.dim,opacity:i===6?0.25:1}}/></div>))}
+              </div>
+            </Card>
+            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16}}>
+              {!showAddHabit?(
+                <button onClick={()=>setShowAddHabit(true)} style={{...sb,background:"none",border:"none",color:C.muted,fontSize:11,letterSpacing:"0.06em",textTransform:"uppercase"}}>+ Agregar hábito</button>
+              ):(
+                <div><Lbl style={{marginBottom:12}}>Nuevo hábito</Lbl>
+                  <div style={{display:"flex",gap:8,marginBottom:10}}>
+                    <input value={newHabit.name} onChange={e=>setNewHabit(h=>({...h,name:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&addHabit()} placeholder="Nombre del hábito" style={{flex:2,background:C.surface,border:`1px solid ${C.border}`,borderRadius:3,padding:"9px 12px",color:C.white,fontSize:13,outline:"none",fontFamily:"inherit"}}/>
+                    <input value={newHabit.time} onChange={e=>setNewHabit(h=>({...h,time:e.target.value}))} placeholder="Hora (opcional)" style={{flex:1,background:C.surface,border:`1px solid ${C.border}`,borderRadius:3,padding:"9px 12px",color:C.white,fontSize:13,outline:"none",fontFamily:"inherit"}}/>
+                  </div>
+                  <div style={{display:"flex",gap:8}}><PBtn label="Guardar" onClick={addHabit} disabled={!newHabit.name.trim()}/><GBtn label="Cancelar" onClick={()=>{setShowAddHabit(false);setNewHabit({name:"",time:""});}}/></div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* OBJETIVOS */}
+        {tab==="metas"&&(
+          <div className="fade">
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+              <div><div style={{fontSize:13,fontWeight:500,marginBottom:3}}>Objetivos</div><Lbl>Seguimiento cuantitativo de metas</Lbl></div>
+              <button onClick={()=>setShowAddGoal(v=>!v)} style={{...sb,background:showAddGoal?C.white:"transparent",color:showAddGoal?"#0d0d0d":C.muted,border:`1px solid ${showAddGoal?C.white:C.border}`,borderRadius:3,padding:"8px 16px",fontSize:11,letterSpacing:"0.06em",textTransform:"uppercase"}}>
+                {showAddGoal?"✕ Cancelar":"+ Nuevo objetivo"}
+              </button>
+            </div>
+            {showAddGoal&&<AddGoalForm onSave={saveGoal} onCancel={()=>setShowAddGoal(false)}/>}
+            {goals.length===0&&!showAddGoal&&<div style={{textAlign:"center",padding:"60px 0",color:C.muted,fontSize:13}}>No hay objetivos aún. Toca "+ Nuevo objetivo".</div>}
+            {goals.map(goal=><GoalCard key={goal.id} goal={goal} onUpdate={updateGoal} onDelete={deleteGoal} onUpdateActions={updateGoalActions}/>)}
+          </div>
+        )}
+
+        {/* AGENDA */}
+        {tab==="bloques"&&(
+          <div className="fade">
+            <div style={{fontSize:13,fontWeight:500,marginBottom:4}}>Agenda del día</div><Lbl style={{marginBottom:20}}>Bloques de tiempo estructurados</Lbl>
+            <Card style={{marginBottom:16}}>
+              <div style={{position:"relative"}}>
+                {["06","08","10","12","14","16","18","20","22"].map((h,i)=>(<div key={h} style={{position:"absolute",top:(i/8)*600,left:0,right:0,display:"flex",alignItems:"center",gap:10}}><div style={{fontSize:9,color:C.muted,width:32,textAlign:"right",flexShrink:0}}>{h}:00</div><div style={{flex:1,height:1,background:C.border,opacity:0.4}}/></div>))}
+                <div style={{position:"relative",height:600,paddingLeft:42}}>
+                  {blocks.map(block=>{
+                    const s=toMin(block.start)-toMin("06:00"),e=toMin(block.end)-toMin("06:00"),tot=toMin("22:00")-toMin("06:00");
+                    const top=(s/tot)*600,bh=Math.max(((e-s)/tot)*600,26);
+                    return(<div key={block.id} style={{position:"absolute",left:42,right:0,top,height:bh,background:C.dim,borderLeft:`2px solid ${C.accentDim}`,borderRadius:"0 2px 2px 0",padding:"4px 10px",display:"flex",alignItems:"center",justifyContent:"space-between"}}><div><div style={{fontSize:12,fontWeight:500}}>{block.task}</div><div style={{fontSize:9,color:C.muted}}>{block.start} – {block.end}</div></div><DelBtn onClick={()=>deleteBlock(block.id)}/></div>);
+                  })}
+                </div>
+              </div>
+            </Card>
+            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16}}>
+              {!showAddBlock?(
+                <button onClick={()=>setShowAddBlock(true)} style={{...sb,background:"none",border:"none",color:C.muted,fontSize:11,letterSpacing:"0.06em",textTransform:"uppercase"}}>+ Agregar bloque</button>
+              ):(
+                <div><Lbl style={{marginBottom:12}}>Nuevo bloque de tiempo</Lbl>
+                  <input value={newBlock.task} onChange={e=>setNewBlock(b=>({...b,task:e.target.value}))} placeholder="Nombre del bloque" style={{width:"100%",background:C.surface,border:`1px solid ${C.border}`,borderRadius:3,padding:"9px 12px",color:C.white,fontSize:13,outline:"none",fontFamily:"inherit",marginBottom:8}}/>
+                  <div style={{display:"flex",gap:8,marginBottom:10}}>
+                    <div style={{flex:1}}><Lbl style={{marginBottom:6}}>Inicio</Lbl><Inp type="time" value={newBlock.start} onChange={e=>setNewBlock(b=>({...b,start:e.target.value}))}/></div>
+                    <div style={{flex:1}}><Lbl style={{marginBottom:6}}>Fin</Lbl><Inp type="time" value={newBlock.end} onChange={e=>setNewBlock(b=>({...b,end:e.target.value}))}/></div>
+                  </div>
+                  {newBlock.start&&newBlock.end&&toMin(newBlock.end)<=toMin(newBlock.start)&&<div style={{fontSize:11,color:"#7c4a4a",marginBottom:8}}>La hora de fin debe ser posterior al inicio.</div>}
+                  <div style={{display:"flex",gap:8}}><PBtn label="Agregar" onClick={addBlock} disabled={!newBlock.task.trim()||toMin(newBlock.end)<=toMin(newBlock.start)}/><GBtn label="Cancelar" onClick={()=>{setShowAddBlock(false);setNewBlock({task:"",start:"09:00",end:"10:00"});}}/></div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ENFOQUE */}
+        {tab==="enfoque"&&(
+          <div className="fade">
+            <div style={{fontSize:13,fontWeight:500,marginBottom:4}}>Modo de concentración</div><Lbl style={{marginBottom:32}}>Sesiones de trabajo profundo</Lbl>
+            <Card style={{textAlign:"center",padding:"36px 24px",marginBottom:16}}>
+              <div style={{fontSize:88,fontWeight:200,color:focusRun?C.white:C.accentDim,letterSpacing:"-3px",lineHeight:1,marginBottom:12}}>{fmt(focusTime)}</div>
+              <div style={{fontSize:10,color:C.muted,letterSpacing:"0.14em",textTransform:"uppercase",marginBottom:36}}>{focusRun?"Sesión activa":"En espera"}</div>
+              <div style={{display:"flex",gap:8,justifyContent:"center"}}><PBtn label={focusRun?"Pausar":"Iniciar"} onClick={()=>setFocusRun(r=>!r)}/><GBtn label="Reiniciar" onClick={()=>{setFocusTime(25*60);setFocusRun(false);}}/></div>
+            </Card>
+            <Card style={{marginBottom:16}}>
+              <Lbl style={{marginBottom:14}}>Duración de sesión</Lbl>
+              <div style={{display:"flex",gap:6}}>
+                {[{l:"25 min",s:25*60},{l:"45 min",s:45*60},{l:"90 min",s:90*60}].map(p=>(<button key={p.l} onClick={()=>{setFocusTime(p.s);setFocusRun(false);}} style={{...sb,flex:1,background:focusTime===p.s?C.dim:"transparent",border:`1px solid ${focusTime===p.s?C.borderHi:C.border}`,borderRadius:3,padding:"10px 8px",color:focusTime===p.s?C.white:C.muted,fontSize:12,fontWeight:500}}>{p.l}</button>))}
+              </div>
+            </Card>
+            <Card><Lbl style={{marginBottom:14}}>Ambiente sonoro</Lbl><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>{AMBIENT.map(s=>(<button key={s} onClick={()=>setSound(sound===s?null:s)} style={{...sb,background:sound===s?C.dim:"transparent",border:`1px solid ${sound===s?C.borderHi:C.border}`,borderRadius:3,padding:"10px 8px",color:sound===s?C.white:C.muted,fontSize:11}}>{s}</button>))}</div></Card>
+          </div>
+        )}
+
+        {/* ANÁLISIS */}
+        {tab==="analisis"&&(
+          <div className="fade">
+            <div style={{fontSize:13,fontWeight:500,marginBottom:4}}>Análisis de rendimiento</div><Lbl style={{marginBottom:20}}>Diagnóstico y predicción de fugas de tiempo</Lbl>
+            <AIAnalysis tasks={tasks}/>
+            <Card style={{marginBottom:16}}>
+              <Lbl style={{marginBottom:16}}>Actividad semanal</Lbl>
+              <div style={{display:"flex",alignItems:"flex-end",gap:4,height:72}}>
+                {[{d:"L",v:8},{d:"M",v:6},{d:"X",v:9},{d:"J",v:7},{d:"V",v:5},{d:"S",v:3},{d:"D",v:0}].map((item,i)=>(<div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:6}}><div style={{width:"100%",height:`${(item.v/10)*56}px`,background:i===6?C.dim:C.accentDim,borderRadius:2}}/><div style={{fontSize:9,color:C.muted,textTransform:"uppercase"}}>{item.d}</div></div>))}
+              </div>
+            </Card>
+            <Card><Lbl style={{marginBottom:14}}>Tareas por área</Lbl>{AREAS.map(a=>{const count=tasks.filter(t=>t.category===a.id).length;const done=tasks.filter(t=>t.category===a.id&&t.done).length;if(!count)return null;return(<div key={a.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:`1px solid ${C.border}`}}><div style={{fontSize:12,width:80,color:C.muted,flexShrink:0}}>{a.label}</div><div style={{flex:1,height:2,background:C.dim,borderRadius:1}}><div style={{width:`${Math.round((done/count)*100)}%`,height:"100%",background:C.accentDim,borderRadius:1}}/></div><div style={{fontSize:11,color:C.muted,width:36,textAlign:"right"}}>{done}/{count}</div></div>);})}</Card>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+// ── Root controller ────────────────────────────────────────────────────────────
+function App(){
+  const [phase,setPhase]=useState("splash"); // splash | auth | app
+  const [user,setUser]=useState(null);
+
+  useEffect(()=>{
+    // Check existing session after splash
+    const session=load("session",null);
+    if(session){setUser(session);}
+  },[]);
+
+  const handleSplashDone=()=>{
+    const session=load("session",null);
+    if(session){setUser(session);setPhase("app");}
+    else{setPhase("auth");}
+  };
+
+  const handleLogin=(u)=>{setUser(u);setPhase("app");};
+  const handleLogout=()=>{save("session",null);setUser(null);setPhase("auth");};
+
+  if(phase==="splash") return <SplashScreen onDone={handleSplashDone}/>;
+  if(phase==="auth"||!user) return <AuthScreen onLogin={handleLogin}/>;
+  return <Kronos user={user} onLogout={handleLogout}/>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
